@@ -1,0 +1,53 @@
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ride-request-service
+  namespace: rideflow
+  labels:
+    app: ride-request-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ride-request-service
+  template:
+    metadata:
+      labels:
+        app: ride-request-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8000"
+        prometheus.io/path:   "/metrics"
+    spec:
+      containers:
+        - name: ride-request-service
+          image: rideflow/ride-request-service:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: rideflow-config
+          env:
+            - name: SERVICE_NAME
+              value: "ride-request-service"
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
