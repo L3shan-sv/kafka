@@ -1,0 +1,6 @@
+confluent-kafka==2.4.0
+ pydantic==2.7.1
+ redis==5.0.4
+ prometheus-client==0.20.0
+python-dotenv==1.0.1
+
