@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: driver-match-service
+  namespace: rideflow
+  labels:
+    app: driver-match-service
+spec:
+  replicas: 3                  # more replicas = more Kafka partitions consumed in parallel
+  selector:
+    matchLabels:
+      app: driver-match-service
+  template:
+    metadata:
+      labels:
+        app: driver-match-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8000"
+    spec:
+      containers:
+        - name: driver-match-service
+          image: rideflow/driver-match-service:latest
+          envFrom:
+            - configMapRef:
+                name: rideflow-config
+          env:
+            - name: SERVICE_NAME
+              value: "driver-match-service"
+            - name: MAX_DRIVER_RETRIES
+              value: "5"
+          resources:
+            requests:
+              cpu:    "200m"
+              memory: "256Mi"
+            limits:
+              cpu:    "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import redis, os; redis.from_url(os.getenv('REDIS_URL')).ping()"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
