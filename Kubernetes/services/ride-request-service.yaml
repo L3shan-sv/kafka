@@ -1,0 +1,15 @@
+
+kind: Service
+metadata:
+  name: ride-request-service
+  namespace: rideflow
+  labels:
+    app: ride-request-service
+spec:
+  type: LoadBalancer          # AWS ALB terminates here
+  selector:
+    app: ride-request-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
