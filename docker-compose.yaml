@@ -1,0 +1,266 @@
+version: "3.9"
+
+# ─── Shared Network ──────────────────────────────────────────────────────────
+networks:
+  rideflow:
+    driver: bridge
+
+# ─── Volumes ─────────────────────────────────────────────────────────────────
+volumes:
+  redis_data:
+  kafka_data:
+
+# ─── Services ────────────────────────────────────────────────────────────────
+services:
+
+  # ── Zookeeper (Kafka dependency) ───────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: rideflow-zookeeper
+    networks: [rideflow]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka Broker ───────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: rideflow-kafka
+    networks: [rideflow]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"       # external access from host machine
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"   # we create topics explicitly
+      KAFKA_LOG_RETENTION_HOURS: 168             # keep events for 7 days
+      KAFKA_MESSAGE_MAX_BYTES: 1048576           # 1MB max message size
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Kafka Topic Init (runs once, creates all topics) ──────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: rideflow-kafka-init
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo 'Creating RideFlow Kafka topics...'
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.requested --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.driver_matched --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.driver_accepted --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.driver_declined --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.started --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.completed --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.cancelled_by_rider --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.cancelled_by_driver --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payment.charged --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payment.failed --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payment.cancellation_charged --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic notification.sent --partitions 4 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic ride.DLQ --partitions 1 --replication-factor 1
+
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payment.DLQ --partitions 1 --replication-factor 1
+
+      echo 'All topics created.'
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    restart: on-failure
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: rideflow-redis
+    networks: [rideflow]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes   # persist data to disk
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka UI (local dev visibility) ───────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: rideflow-kafka-ui
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: rideflow-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ── Ride Request Service ───────────────────────────────────────────────────
+  ride-request-service:
+    build: ./services/ride-request-service
+    container_name: rideflow-ride-request
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      SERVICE_NAME: ride-request-service
+    volumes:
+      - ./schemas:/app/schemas   # mount shared schemas
+    restart: unless-stopped
+
+  # ── Driver Match Service ───────────────────────────────────────────────────
+  driver-match-service:
+    build: ./services/driver-match-service
+    container_name: rideflow-driver-match
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      SERVICE_NAME: driver-match-service
+      MAX_DRIVER_RETRIES: 5
+    volumes:
+      - ./schemas:/app/schemas
+    restart: unless-stopped
+
+  # ── Payment Service ────────────────────────────────────────────────────────
+  payment-service:
+    build: ./services/payment-service
+    container_name: rideflow-payment
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      SERVICE_NAME: payment-service
+    volumes:
+      - ./schemas:/app/schemas
+    restart: unless-stopped
+
+  # ── Notification Service ───────────────────────────────────────────────────
+  notification-service:
+    build: ./services/notification-service
+    container_name: rideflow-notification
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      SERVICE_NAME: notification-service
+    volumes:
+      - ./schemas:/app/schemas
+    restart: unless-stopped
+
+  # ── Analytics Service ──────────────────────────────────────────────────────
+  analytics-service:
+    build: ./services/analytics-service
+    container_name: rideflow-analytics
+    networks: [rideflow]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8005:8000"              # exposes /metrics for Prometheus
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      REDIS_URL: redis://redis:6379
+      SERVICE_NAME: analytics-service
+    volumes:
+      - ./schemas:/app/schemas
+    restart: unless-stopped
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rideflow-prometheus
+    networks: [rideflow]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: rideflow-grafana
+    networks: [rideflow]
+    depends_on: [prometheus]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: rideflow123
+    volumes:
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
