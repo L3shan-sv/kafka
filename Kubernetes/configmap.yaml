@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rideflow-config
+  namespace: rideflow
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service:9092"
+  REDIS_URL:               "redis://redis-service:6379"
+  MAX_DRIVER_RETRIES:      "5"
