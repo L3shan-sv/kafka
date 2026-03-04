@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "ride-request-service"
+    static_configs:
+      - targets: ["ride-request-service:8000"]
+
+  - job_name: "analytics-service"
+    static_configs:
+      - targets: ["analytics-service:8000"]
+
+  - job_name: "payment-service"
+    static_configs:
+      - targets: ["payment-service:8000"]
+
+  - job_name: "notification-service"
+    static_configs:
+      - targets: ["notification-service:8000"]
+
+  - job_name: "driver-match-service"
+    static_configs:
+      - targets: ["driver-match-service:8000"]
