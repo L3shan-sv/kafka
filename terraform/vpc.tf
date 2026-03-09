@@ -1,7 +1,7 @@
-═══════════════════════════════════════════════
+
 
 terraform {
-  required_version = ">= 1.7.0"
+  required_version = ""6.35.1"
 
   required_providers {
     aws = {
@@ -10,14 +10,14 @@ terraform {
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.0"
+      version = "3.0.1"
     }
   }
 
   # Store state remotely — never commit terraform.tfstate to git
   backend "s3" {
-    bucket = "rideflow-terraform-state"
-    key    = "prod/terraform.tfstate"
+    bucket = rideflow-terraform-state
+    key    = prod/terraform.tfstate
     region = "us-east-1"
   }
 }
