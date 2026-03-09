@@ -63,7 +63,7 @@ Correlation ID — every event carries correlation_id generated at ride request 
 Local Development
 Prerequisites: Docker, Docker Compose
 bash# Clone the repo
-git clone https://github.com/yourname/rideflow.git
+git clone https://github.com/L3shan-sv/kafka.git
 cd rideflow
 
 # Start the full platform
