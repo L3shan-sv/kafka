@@ -3,6 +3,7 @@ import os
 import redis
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, make_asgi_app
 import time
@@ -58,7 +59,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount Prometheus metrics endpoint
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount Prometheus metrics endpoint — must come AFTER middleware
 app.mount("/metrics", make_asgi_app())
 
 
@@ -79,7 +88,7 @@ class RideRequestInput(BaseModel):
 
 class RideCancelInput(BaseModel):
     rider_id:       str
-    correlation_id: str                   # ride to cancel
+    correlation_id: str
     driver_id:      str | None = None
     reason:         str | None = None
 
@@ -119,11 +128,6 @@ async def health():
     response_model=RideRequestResponse,
 )
 async def request_ride(body: RideRequestInput):
-    """
-    Rider requests a ride.
-    Validates input, publishes ride.requested to Kafka, returns immediately.
-    All downstream work (matching, payment, notifications) is async.
-    """
     start = time.time()
 
     event = make_ride_requested(
@@ -133,10 +137,8 @@ async def request_ride(body: RideRequestInput):
         ride_type=body.ride_type,
     )
 
-    # Store initial ride state in Redis
     set_ride_state(event.correlation_id, RideState.REQUESTED)
 
-    # Publish to Kafka — partitioned by rider_id for ordering
     producer.publish(
         topic=EventType.RIDE_REQUESTED,
         event=event,
@@ -164,14 +166,8 @@ async def request_ride(body: RideRequestInput):
     response_model=RideRequestResponse,
 )
 async def cancel_ride(body: RideCancelInput):
-    """
-    Rider cancels their ride.
-    Checks current ride state to determine cancel_stage and fee eligibility.
-    Publishes ride.cancelled_by_rider to Kafka.
-    """
     start = time.time()
 
-    # Get current ride state to determine cancel stage
     current_state = get_ride_state(body.correlation_id)
 
     if not current_state:
@@ -192,7 +188,6 @@ async def cancel_ride(body: RideCancelInput):
             detail="Cannot cancel a completed ride.",
         )
 
-    # Map ride state → cancel stage for Payment Service fee logic
     cancel_stage_map = {
         RideState.REQUESTED: "before_match",
         RideState.MATCHED:   "after_match",
@@ -209,18 +204,14 @@ async def cancel_ride(body: RideCancelInput):
         reason=body.reason,
     )
 
-    # Mark ride as cancelled in Redis atomically
-    # SET NX ensures if driver is cancelling simultaneously, only one wins
     locked = redis_client.set(
         f"ride:{body.correlation_id}:state",
         RideState.CANCELLED.value,
         ex=86400,
-        nx=True,      # only set if not already set to cancelled
+        nx=True,
     )
 
     if not locked:
-        # Driver cancelled at the same time — race condition resolved
-        # We still publish our event, Payment Service handles deduplication
         logger.warning(
             f"Race condition detected on cancel | "
             f"correlation_id={body.correlation_id} rider={body.rider_id}"
