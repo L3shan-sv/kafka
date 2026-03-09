@@ -15,7 +15,7 @@ class KafkaConsumer:
             "session.timeout.ms":       30000,
             "heartbeat.interval.ms":    10000,
         })
-        self._consumer.subscribe(topics)
+        self._consumer.subscribe([t.value if hasattr(t, 'value') else t for t in topics])
         logger.info(f"Subscribed to topics: {topics} | group={group_id}")
 
     def poll(self, timeout: float = 1.0):
@@ -31,6 +31,9 @@ class KafkaConsumer:
 
         if msg.error():
             if msg.error().code() == KafkaError._PARTITION_EOF:
+                return None
+            if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                logger.warning(f"Topic not available yet, retrying... {msg.error()}")
                 return None
             raise KafkaException(msg.error())
 
