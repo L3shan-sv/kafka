@@ -206,6 +206,14 @@ def handle_ride_requested(event: EventEnvelope) -> None:
         logger.warning(f"Ride sent to DLQ | cid={cid} retries={retry}")
         return
 
+    # Save original ride data to Redis so retries can recover pickup/dropoff
+    import json
+    redis_client.set(f"ride:{cid}:original_data", json.dumps({
+        "pickup":    pickup,
+        "dropoff":   dropoff,
+        "ride_type": data.get("ride_type", "standard"),
+    }), ex=86400)
+
     start = time.time()
 
     # Find a driver
@@ -276,6 +284,17 @@ def handle_ride_driver_declined(event: EventEnvelope) -> None:
     logger.info(f"Re-queuing ride after decline | cid={cid} retry={retry}")
 
     # Rebuild ride.requested event with same correlation_id + incremented retry
+    # Recover pickup/dropoff from Redis if missing from declined event
+    pickup  = data.get("pickup") or {}
+    dropoff = data.get("dropoff") or {}
+    if not pickup:
+        import json
+        saved = redis_client.get(f"ride:{cid}:original_data")
+        if saved:
+            original = json.loads(saved)
+            pickup  = original.get("pickup", {})
+            dropoff = original.get("dropoff", {})
+
     requeue_event = EventEnvelope(
         event_type=EventType.RIDE_REQUESTED,
         producer=SERVICE_NAME,
@@ -283,8 +302,8 @@ def handle_ride_driver_declined(event: EventEnvelope) -> None:
         retry_count=retry,
         data={
             "rider_id":  rider_id,
-            "pickup":    data.get("pickup",   {}),
-            "dropoff":   data.get("dropoff",  {}),
+            "pickup":    pickup,
+            "dropoff":   dropoff,
             "ride_type": data.get("ride_type", "standard"),
         },
     )
